@@ -1,0 +1,88 @@
+name: SolveBeat Distributed Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL to test'
+        required: true
+      max_vus:
+        description: 'Max concurrent VUs per node'
+        required: true
+        default: '50'
+      hold_seconds:
+        description: 'Sustained duration in seconds'
+        required: true
+        default: '60'
+      run_id:
+        description: 'SolveBeat run identifier for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  node:
+    strategy:
+      matrix:
+        node_index: [0, 1, 2, 3]
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect own public IP
+        id: myip
+        run: echo "ip=$(curl -s https://api.ipify.org)" >> "$GITHUB_OUTPUT"
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Write k6 script
+        run: |
+          cat > loadtest.js << 'K6EOF'
+          import http from 'k6/http';
+          export const options = {
+            discardResponseBodies: true,
+            scenarios: {
+              load_test: {
+                executor: 'ramping-vus',
+                startVUs: 0,
+                stages: [
+                  { duration: '10s', target: Number(__ENV.MAX_VUS) },
+                  { duration: Number(__ENV.HOLD_SECONDS) + 's', target: Number(__ENV.MAX_VUS) },
+                  { duration: '10s', target: 0 },
+                ],
+              },
+            },
+          };
+          export default function () {
+            http.get(__ENV.TARGET_URL);
+          }
+          export function handleSummary(data) {
+            const summary = {
+              totalRequests: data.metrics.http_reqs ? data.metrics.http_reqs.values.count : 0,
+              avgMs: data.metrics.http_req_duration ? data.metrics.http_req_duration.values.avg : null,
+              p95Ms: data.metrics.http_req_duration ? data.metrics.http_req_duration.values['p(95)'] : null,
+              errorRatePct: data.metrics.http_req_failed ? data.metrics.http_req_failed.values.rate * 100 : 0,
+            };
+            return { '/tmp/summary.json': JSON.stringify(summary), stdout: JSON.stringify(summary) };
+          }
+          K6EOF
+
+      - name: Run k6
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          MAX_VUS: ${{ github.event.inputs.max_vus }}
+          HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+        run: k6 run loadtest.js || true
+
+      - name: Report results
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          RUN_ID: ${{ github.event.inputs.run_id }}
+          NODE_INDEX: ${{ matrix.node_index }}
+          REPORTED_IP: ${{ steps.myip.outputs.ip }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
+          PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
