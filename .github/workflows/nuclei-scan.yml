@@ -1,0 +1,48 @@
+name: SolveBeat Nuclei Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL to scan'
+        required: true
+      scan_id:
+        description: 'SolveBeat scan identifier for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install nuclei
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+          VER=${LATEST#v}
+          curl -sL "https://github.com/projectdiscovery/nuclei/releases/download/${LATEST}/nuclei_${VER}_linux_amd64.zip" -o nuclei.zip
+          unzip -o nuclei.zip nuclei
+          chmod +x nuclei
+          sudo mv nuclei /usr/local/bin/nuclei
+          nuclei -version || true
+
+      - name: Update templates
+        run: nuclei -update-templates || true
+
+      - name: Run nuclei
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+        run: |
+          nuclei -u "$TARGET_URL" -as -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl || true
+
+      - name: Report results
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          FINDINGS=$(cat /tmp/results.jsonl 2>/dev/null | jq -s '.' || echo '[]')
+          PAYLOAD=$(jq -n --arg scanId "$SCAN_ID" --argjson findings "$FINDINGS" '{scanId:$scanId, findings:$findings}')
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
