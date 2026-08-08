@@ -56,6 +56,12 @@ jobs:
           SCAN_ID: ${{ github.event.inputs.scan_id }}
           CALLBACK_URL: ${{ github.event.inputs.callback_url }}
         run: |
-          FINDINGS=$(cat /tmp/results.jsonl 2>/dev/null | jq -s '.' || echo '[]')
-          PAYLOAD=$(jq -n --arg scanId "$SCAN_ID" --argjson findings "$FINDINGS" '{scanId:$scanId, findings:$findings}')
-          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+          # Findings can be large (verbose raw request/response per match) --
+          # passing them via a jq command-line argument (--argjson) hits the
+          # OS ARG_MAX limit on real scans with many results ("Argument list
+          # too long", confirmed live against a real target). Building the
+          # payload entirely via files/stdin avoids any command-line size
+          # limit regardless of how many findings there are.
+          jq -s '.' /tmp/results.jsonl > /tmp/findings_array.json 2>/dev/null || echo '[]' > /tmp/findings_array.json
+          jq -n --arg scanId "$SCAN_ID" --slurpfile findings /tmp/findings_array.json '{scanId:$scanId, findings:$findings[0]}' > /tmp/payload.json
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
