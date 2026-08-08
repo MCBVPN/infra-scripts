@@ -12,6 +12,14 @@ on:
       callback_url:
         description: 'Backend URL to POST results to'
         required: true
+      severity:
+        description: 'Comma-separated severities to include (blank = all)'
+        required: false
+        default: ''
+      tags:
+        description: 'Comma-separated template tags to include (blank = automatic-scan default)'
+        required: false
+        default: ''
 
 jobs:
   scan:
@@ -34,8 +42,13 @@ jobs:
       - name: Run nuclei
         env:
           TARGET_URL: ${{ github.event.inputs.target_url }}
+          SEVERITY: ${{ github.event.inputs.severity }}
+          TAGS: ${{ github.event.inputs.tags }}
         run: |
-          nuclei -u "$TARGET_URL" -as -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl || true
+          ARGS=(-u "$TARGET_URL" -as -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl)
+          if [ -n "$SEVERITY" ]; then ARGS+=(-severity "$SEVERITY"); fi
+          if [ -n "$TAGS" ]; then ARGS+=(-tags "$TAGS"); fi
+          nuclei "${ARGS[@]}" || true
 
       - name: Report results
         env:
