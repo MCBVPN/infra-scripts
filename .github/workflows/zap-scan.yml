@@ -1,0 +1,79 @@
+name: SolveBeat ZAP Advanced Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL to scan'
+        required: true
+      job_id:
+        description: 'SolveBeat scan_jobs.job_id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+      max_duration_seconds:
+        description: 'Hard timeout in seconds -- report partial results if exceeded'
+        required: false
+        default: '600'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Java (for ZAP)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download and start ZAP
+        env:
+          ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
+        run: |
+          curl -sL https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz -o zap.tar.gz
+          tar -xzf zap.tar.gz
+          cd ZAP_2.16.1
+          ./zap.sh -daemon -host 127.0.0.1 -port 8090 -config api.disablekey=false -config api.key="$ZAP_API_KEY" > /tmp/zap.log 2>&1 &
+          echo "Waiting for ZAP to come up..."
+          for i in $(seq 1 45); do
+            if curl -s "http://127.0.0.1:8090/JSON/core/view/version/?apikey=$ZAP_API_KEY" | grep -q version; then
+              echo "ZAP is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ZAP did not start in time"; cat /tmp/zap.log; exit 1
+
+      - name: Run scan
+        env:
+          ZAP_API_URL: http://127.0.0.1:8090
+          ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          MAX_DURATION_SECONDS: ${{ github.event.inputs.max_duration_seconds }}
+        run: node scripts/run-zap-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/zap-error.txt ]; then
+            jq -n --arg jobId "$JOB_ID" --rawfile err /tmp/zap-error.txt '{job_id:$jobId, error:$err}' > /tmp/payload.json
+          elif [ -f /tmp/zap-result.json ]; then
+            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/zap-result.json '{job_id:$jobId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg jobId "$JOB_ID" '{job_id:$jobId, error:"ZAP scan produced no output"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json

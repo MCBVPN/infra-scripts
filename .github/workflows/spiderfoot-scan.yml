@@ -1,0 +1,75 @@
+name: SolveBeat SpiderFoot Exposure Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL to scan'
+        required: true
+      job_id:
+        description: 'SolveBeat scan_jobs.job_id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+      max_duration_seconds:
+        description: 'Hard timeout in seconds -- report partial results if exceeded'
+        required: false
+        default: '720'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install and start SpiderFoot
+        run: |
+          git clone --depth 1 https://github.com/smicallef/spiderfoot.git /tmp/spiderfoot
+          cd /tmp/spiderfoot
+          pip install -r requirements.txt
+          python sf.py -l 127.0.0.1:5001 > /tmp/spiderfoot.log 2>&1 &
+          echo "Waiting for SpiderFoot to come up..."
+          for i in $(seq 1 45); do
+            if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5001/ | grep -q 200; then
+              echo "SpiderFoot is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "SpiderFoot did not start in time"; cat /tmp/spiderfoot.log; exit 1
+
+      - name: Run scan
+        env:
+          SPIDERFOOT_URL: http://127.0.0.1:5001
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          MAX_DURATION_SECONDS: ${{ github.event.inputs.max_duration_seconds }}
+        run: node scripts/run-spiderfoot-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/spiderfoot-error.txt ]; then
+            jq -n --arg jobId "$JOB_ID" --rawfile err /tmp/spiderfoot-error.txt '{job_id:$jobId, error:$err}' > /tmp/payload.json
+          elif [ -f /tmp/spiderfoot-result.json ]; then
+            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/spiderfoot-result.json '{job_id:$jobId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg jobId "$JOB_ID" '{job_id:$jobId, error:"SpiderFoot scan produced no output"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
