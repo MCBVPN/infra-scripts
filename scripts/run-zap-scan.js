@@ -65,18 +65,57 @@ async function getZapScanStatus(scanId) {
   return parseInt(data.status);
 }
 
+// ZAP's alerts API returns one row PER MATCHED URL -- a passive check like
+// "Missing Anti-clickjacking Header" fires once for every single page the
+// spider crawled, so a real site with a few thousand pages produces a few
+// thousand near-identical rows for the SAME underlying issue. Confirmed
+// live against www.computacenter.com: 30,000-36,000+ raw alerts, a JSON
+// payload so large it blew through nginx/Express body limits raised as
+// high as 150MB/140MB (twice). The fix belongs here, not in ever-larger
+// size limits: group same issue+risk into one finding with an instance
+// count and a capped sample of affected URLs -- what the backend already
+// stores per finding (severity/title/description/solution) doesn't lose
+// anything, since it never used the per-instance url field anyway.
+const MAX_SAMPLE_URLS = 15;
+
+function dedupeAlerts(alerts) {
+  const groups = new Map();
+  for (const a of alerts) {
+    const key = `${a.alert || a.name || ''}|${a.risk || ''}`;
+    if (!groups.has(key)) {
+      groups.set(key, { representative: a, urls: new Set(), count: 0 });
+    }
+    const g = groups.get(key);
+    g.count += 1;
+    if (a.url) g.urls.add(a.url);
+  }
+  return Array.from(groups.values()).map((g) => {
+    const sample = Array.from(g.urls).slice(0, MAX_SAMPLE_URLS);
+    const urlNote = g.count > 1
+      ? `\n\nDetected on ${g.count} page(s). Sample (${sample.length} of ${g.urls.size} unique URLs): ${sample.join(', ')}`
+      : '';
+    return {
+      ...g.representative,
+      instanceCount: g.count,
+      affectedUrlCount: g.urls.size,
+      description: (g.representative.description || '') + urlNote,
+    };
+  });
+}
+
 async function getZapAlerts(targetUrl) {
   const res = await fetch(`${ZAP_API_URL}/JSON/core/view/alerts/?apikey=${ZAP_API_KEY}`);
   const data = await res.json();
   const targetHost = new URL(targetUrl).hostname.toLowerCase();
   const allAlerts = data.alerts || [];
-  return allAlerts.filter((a) => {
+  const hostAlerts = allAlerts.filter((a) => {
     try {
       return new URL(a.url).hostname.toLowerCase() === targetHost;
     } catch (e) {
       return false;
     }
   });
+  return dedupeAlerts(hostAlerts);
 }
 
 (async () => {
@@ -99,7 +138,8 @@ async function getZapAlerts(targetUrl) {
       alerts = await getZapAlerts(TARGET_URL);
     }
     fs.writeFileSync('/tmp/zap-result.json', JSON.stringify(alerts));
-    console.log(`ZAP scan done: ${alerts.length} alert(s) for ${TARGET_URL}`);
+    const totalInstances = alerts.reduce((sum, a) => sum + (a.instanceCount || 1), 0);
+    console.log(`ZAP scan done: ${alerts.length} distinct finding(s) (${totalInstances} raw instance(s)) for ${TARGET_URL}`);
   } catch (err) {
     console.error('ZAP scan failed:', err.message);
     fs.writeFileSync('/tmp/zap-error.txt', err.message);
