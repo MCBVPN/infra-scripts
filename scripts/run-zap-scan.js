@@ -41,7 +41,29 @@ async function waitForAjaxSpider(maxWaitMs = 90000) {
   await fetch(`${ZAP_API_URL}/JSON/ajaxSpider/action/stop/?apikey=${ZAP_API_KEY}`);
 }
 
+// Bounds total crawl/scan scope for large, complex sites. Without this,
+// ZAP's spider enumerates every URL it can reach with no ceiling --
+// confirmed live against www.computacenter.com: 30,000-36,000+ resulting
+// alerts from a single scan. That both blew through downstream payload
+// limits (fixed separately via dedupeAlerts()) AND made the whole
+// spider+ajax-spider+active-scan sequence take long enough to exceed
+// MAX_DURATION_SECONDS and, on at least one run, kill the ZAP daemon
+// itself (the fetch() calls below started failing with "terminated" --
+// the local socket to 127.0.0.1:8090 closing mid-request, consistent
+// with the Java process dying, most likely OOM on the runner's limited
+// RAM). Depth/children caps bound total pages regardless of site size;
+// the duration caps are a second, independent safety net -- deliberately
+// well inside MAX_DURATION_SECONDS so a slow site fails soft (fewer
+// pages covered) rather than hard (whole scan lost).
+async function configureScanLimits() {
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDepth/?apikey=${ZAP_API_KEY}&Integer=5`);
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxChildren/?apikey=${ZAP_API_KEY}&Integer=10`);
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDuration/?apikey=${ZAP_API_KEY}&Integer=3`);
+  await fetch(`${ZAP_API_URL}/JSON/ascan/action/setOptionMaxScanDurationInMins/?apikey=${ZAP_API_KEY}&Integer=5`);
+}
+
 async function startZapScan(targetUrl) {
+  await configureScanLimits();
   const spiderRes = await fetch(`${ZAP_API_URL}/JSON/spider/action/scan/?apikey=${ZAP_API_KEY}&url=${encodeURIComponent(targetUrl)}`);
   const spiderData = await spiderRes.json();
   const spiderScanId = spiderData.scan;
@@ -145,3 +167,4 @@ async function getZapAlerts(targetUrl) {
     fs.writeFileSync('/tmp/zap-error.txt', err.message);
   }
 })();
+
