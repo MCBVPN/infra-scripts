@@ -190,7 +190,12 @@ async function scanScriptsWithRetire(scriptUrls) {
       checkExposedSourceMaps(scriptUrls),
       scanScriptsWithRetire(scriptUrls),
     ]);
-    const notes = [`Rendered-browser scan saw ${scriptUrls.length} script(s) actually loaded by the page -- including any injected by its own JavaScript after load, not just what's declared in the static HTML.`];
+    // Only genuine tool problems go in `notes` -- the backend stores this
+    // as the scan's error_message, which the admin UI renders with a ⚠
+    // warning icon. The routine "saw N scripts" count is informational,
+    // not a problem, so it goes in scriptCount instead (a false ⚠ on every
+    // successful scan would train admins to ignore the icon).
+    const notes = [];
     if (retireResult.toolError) notes.push(retireResult.toolError);
     const findings = [...sourceMapFindings, ...retireResult.findings];
     fs.writeFileSync('/tmp/js-recon-result.json', JSON.stringify({ findings, notes, scriptCount: scriptUrls.length }));
