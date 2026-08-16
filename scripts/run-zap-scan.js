@@ -55,11 +55,21 @@ async function waitForAjaxSpider(maxWaitMs = 90000) {
 // the duration caps are a second, independent safety net -- deliberately
 // well inside MAX_DURATION_SECONDS so a slow site fails soft (fewer
 // pages covered) rather than hard (whole scan lost).
+//
+// The first version of these caps (depth 5 / children 10 / spider 3min /
+// ascan 5min) stopped the crash but was overtuned -- confirmed live on
+// vertexacademy.uk, findings dropped from 665 (uncapped, pre-fix) to 14
+// (first capped version), i.e. the scan was stopping long before it ran
+// out of useful ground to cover. Raised to give real sites more room
+// while the depth/children ceiling still keeps worst-case scope bounded;
+// paired with a higher MAX_DURATION_SECONDS/workflow timeout (see
+// zap-scan.yml and the backend's maxDurationSeconds for 'active' jobs) so
+// this can't reintroduce the same duration-exceeded crash.
 async function configureScanLimits() {
-  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDepth/?apikey=${ZAP_API_KEY}&Integer=5`);
-  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxChildren/?apikey=${ZAP_API_KEY}&Integer=10`);
-  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDuration/?apikey=${ZAP_API_KEY}&Integer=3`);
-  await fetch(`${ZAP_API_URL}/JSON/ascan/action/setOptionMaxScanDurationInMins/?apikey=${ZAP_API_KEY}&Integer=5`);
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDepth/?apikey=${ZAP_API_KEY}&Integer=8`);
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxChildren/?apikey=${ZAP_API_KEY}&Integer=20`);
+  await fetch(`${ZAP_API_URL}/JSON/spider/action/setOptionMaxDuration/?apikey=${ZAP_API_KEY}&Integer=5`);
+  await fetch(`${ZAP_API_URL}/JSON/ascan/action/setOptionMaxScanDurationInMins/?apikey=${ZAP_API_KEY}&Integer=8`);
 }
 
 async function startZapScan(targetUrl) {
