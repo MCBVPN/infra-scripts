@@ -1,0 +1,76 @@
+name: SolveBeat Cloud Security Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      role_arn:
+        description: 'Client role ARN to assume (blank = scan the Solvbeat base account directly, used only for internal testing)'
+        required: false
+        default: ''
+      external_id:
+        description: 'External ID required by the client role trust policy'
+        required: false
+        default: ''
+      scan_id:
+        description: 'SolveBeat supply_chain_scans.id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-1
+          # Empty role-to-assume means "use the base Solvbeat identity
+          # directly" -- only meant for testing the scanner itself against
+          # Solvbeat's own account, never for a real client engagement.
+          role-to-assume: ${{ github.event.inputs.role_arn }}
+          role-external-id: ${{ github.event.inputs.external_id }}
+          role-skip-session-tagging: true
+
+      - name: Verify assumed identity
+        run: aws sts get-caller-identity
+
+      - name: Install Prowler
+        run: pip install --quiet prowler
+
+      - name: Run Prowler
+        run: |
+          mkdir -p /tmp/prowler-output
+          prowler aws -M json-ocsf -o /tmp/prowler-output -F prowler-output --status FAIL || true
+          ls -la /tmp/prowler-output || true
+
+      - name: Parse results
+        env:
+          PROWLER_OUTPUT_FILE: /tmp/prowler-output/prowler-output.ocsf.json
+        run: node scripts/parse-prowler-results.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/cloud-scan-result.json ]; then
+            jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/cloud-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"Cloud scan produced no output -- check the run log for a Prowler/AssumeRole error"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
