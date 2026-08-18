@@ -20,6 +20,9 @@ on:
       callback_url:
         description: 'Backend URL to POST results to'
         required: true
+      metrics_url:
+        description: 'Backend URL to POST periodic metrics ticks to (for live Grafana)'
+        required: false
 
 jobs:
   node:
@@ -92,7 +95,44 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.target_url }}
           MAX_VUS: ${{ github.event.inputs.max_vus }}
           HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
-        run: k6 run loadtest.js || true
+          RUN_ID: ${{ github.event.inputs.run_id }}
+          NODE_INDEX: ${{ matrix.node_index }}
+          METRICS_URL: ${{ github.event.inputs.metrics_url }}
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+        run: |
+          # k6's own InfluxDB output can't be pointed at our backend safely
+          # (it ignores URL-embedded auth and treats the whole path as the
+          # bucket name -- confirmed against its actual URL-parsing code).
+          # Instead: run k6 in the background with --out json, and every
+          # 15s send a cheap rollup (request count / avg latency / current
+          # VUs) of just the new lines to our own already-authenticated
+          # callback endpoint, which turns it into real InfluxDB points.
+          # This is what makes the "Grafana -- live results" panel show
+          # something during a Hidden/distributed run, not just Standard.
+          k6 run --out json=/tmp/results.ndjson loadtest.js &
+          K6_PID=$!
+
+          WINDOW_START=$(date +%s%3N)
+          LAST_LINE=0
+
+          while kill -0 $K6_PID 2>/dev/null; do
+            sleep 15
+            WINDOW_END=$(date +%s%3N)
+            TOTAL_LINES=$(wc -l < /tmp/results.ndjson 2>/dev/null || echo 0)
+            if [ -n "$METRICS_URL" ] && [ "$TOTAL_LINES" -gt "$LAST_LINE" ]; then
+              tail -n +$((LAST_LINE + 1)) /tmp/results.ndjson > /tmp/delta.ndjson
+              LAST_LINE=$TOTAL_LINES
+              COUNT=$(grep -c '"metric":"http_req_duration"' /tmp/delta.ndjson || echo 0)
+              AVG=$(grep '"metric":"http_req_duration"' /tmp/delta.ndjson | grep -oP '"value":\K[0-9.]+' | awk '{s+=$1; n++} END {if(n>0) printf "%.2f", s/n; else print 0}')
+              VUS=$(grep '"metric":"vus"' /tmp/delta.ndjson | tail -1 | grep -oP '"value":\K[0-9.]+' || echo 0)
+              if [ "$COUNT" -gt 0 ]; then
+                PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --argjson windowStartMs "$WINDOW_START" --argjson windowEndMs "$WINDOW_END" --argjson count "$COUNT" --argjson avgMs "${AVG:-0}" --argjson vus "${VUS:-0}" '{runId:$runId, nodeIndex:$nodeIndex, windowStartMs:$windowStartMs, windowEndMs:$windowEndMs, count:$count, avgMs:$avgMs, vus:$vus}')
+                curl -s -X POST "$METRICS_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD" || true
+              fi
+            fi
+            WINDOW_START=$WINDOW_END
+          done
+          wait $K6_PID || true
 
       - name: Report results
         env:
@@ -105,4 +145,5 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
