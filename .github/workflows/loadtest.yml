@@ -67,8 +67,19 @@ jobs:
               },
             },
           };
+          // A repeated GET against the exact same URL from thousands of VUs
+          // mostly measures the target's edge cache (Varnish/CDN), not its
+          // real origin -- confirmed against www.uji.es, which sits behind
+          // Varnish on an AWS ELB and served most of a 10k-VU run straight
+          // from cache with only a brief real-origin blip when the cache
+          // happened to be cold. A unique query param per request forces a
+          // cache miss every time.
+          function cacheBustedUrl() {
+            var sep = __ENV.TARGET_URL.indexOf('?') === -1 ? '?' : '&';
+            return __ENV.TARGET_URL + sep + '_sbcb=' + Date.now() + '-' + __VU + '-' + __ITER;
+          }
           export default function () {
-            const res = http.get(__ENV.TARGET_URL);
+            const res = http.get(cacheBustedUrl());
             if (res.status === 0) networkErrors.add(1);
             else if (res.status >= 500) serverErrors.add(1);
             else if (res.status >= 400) clientErrors.add(1);
@@ -154,6 +165,7 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
 
 
