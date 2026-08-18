@@ -115,8 +115,7 @@ jobs:
           WINDOW_START=$(date +%s%3N)
           LAST_LINE=0
 
-          while kill -0 $K6_PID 2>/dev/null; do
-            sleep 15
+          send_tick() {
             WINDOW_END=$(date +%s%3N)
             TOTAL_LINES=$(wc -l < /tmp/results.ndjson 2>/dev/null || echo 0)
             if [ -n "$METRICS_URL" ] && [ "$TOTAL_LINES" -gt "$LAST_LINE" ]; then
@@ -131,8 +130,18 @@ jobs:
               fi
             fi
             WINDOW_START=$WINDOW_END
+          }
+
+          while kill -0 $K6_PID 2>/dev/null; do
+            sleep 15
+            send_tick
           done
           wait $K6_PID || true
+          # Final flush -- without this the last partial window (up to 15s
+          # of real traffic) between the last periodic tick and k6 actually
+          # exiting never gets reported, undercounting the live graph's
+          # final numbers versus the real summary.
+          send_tick
 
       - name: Report results
         env:
@@ -145,5 +154,6 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
 
