@@ -56,11 +56,19 @@ jobs:
           export const options = {
             discardResponseBodies: true,
             scenarios: {
+              // Sharp ramp (2s to full VUs) instead of the previous 10s
+              // gradual one -- confirmed against www.uji.es (behind
+              // Varnish, default 10s grace mode) that a slow ramp gives
+              // the backend room to absorb load incrementally, and
+              // Varnish's own grace period can fully mask a brief origin
+              // stumble before it's even visible. A synchronized burst is
+              // what the "thundering herd" literature says actually
+              // saturates a connection pool hard enough to matter.
               load_test: {
                 executor: 'ramping-vus',
                 startVUs: 0,
                 stages: [
-                  { duration: '10s', target: Number(__ENV.MAX_VUS) },
+                  { duration: '2s', target: Number(__ENV.MAX_VUS) },
                   { duration: Number(__ENV.HOLD_SECONDS) + 's', target: Number(__ENV.MAX_VUS) },
                   { duration: '10s', target: 0 },
                 ],
@@ -165,6 +173,7 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
 
 
