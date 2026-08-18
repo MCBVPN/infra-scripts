@@ -23,6 +23,10 @@ on:
       metrics_url:
         description: 'Backend URL to POST periodic metrics ticks to (for live Grafana)'
         required: false
+      ramp_seconds:
+        description: 'Ramp-up duration in seconds (gradual vs sudden-burst comparison)'
+        required: false
+        default: '10'
 
 jobs:
   node:
@@ -68,7 +72,7 @@ jobs:
                 executor: 'ramping-vus',
                 startVUs: 0,
                 stages: [
-                  { duration: '2s', target: Number(__ENV.MAX_VUS) },
+                  { duration: Number(__ENV.RAMP_SECONDS || 10) + 's', target: Number(__ENV.MAX_VUS) },
                   { duration: Number(__ENV.HOLD_SECONDS) + 's', target: Number(__ENV.MAX_VUS) },
                   { duration: '10s', target: 0 },
                 ],
@@ -117,6 +121,7 @@ jobs:
           RUN_ID: ${{ github.event.inputs.run_id }}
           NODE_INDEX: ${{ matrix.node_index }}
           METRICS_URL: ${{ github.event.inputs.metrics_url }}
+          RAMP_SECONDS: ${{ github.event.inputs.ramp_seconds }}
           CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
         run: |
           # k6's own InfluxDB output can't be pointed at our backend safely
@@ -173,6 +178,7 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
 
 
