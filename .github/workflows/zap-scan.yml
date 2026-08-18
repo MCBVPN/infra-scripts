@@ -40,9 +40,12 @@ jobs:
         env:
           ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
         run: |
-          curl -sL https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz -o zap.tar.gz
+          ZAP_TAG=$(curl -s https://api.github.com/repos/zaproxy/zaproxy/releases/latest | grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+          ZAP_VER=${ZAP_TAG#v}
+          echo "Using ZAP $ZAP_TAG (auto-detected latest release)"
+          curl -sL "https://github.com/zaproxy/zaproxy/releases/download/$ZAP_TAG/ZAP_${ZAP_VER}_Linux.tar.gz" -o zap.tar.gz
           tar -xzf zap.tar.gz
-          cd ZAP_2.16.1
+          cd "ZAP_$ZAP_VER"
           ./zap.sh -daemon -host 127.0.0.1 -port 8090 -config api.disablekey=false -config api.key="$ZAP_API_KEY" > /tmp/zap.log 2>&1 &
           echo "Waiting for ZAP to come up..."
           for i in $(seq 1 45); do
