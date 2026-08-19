@@ -1,0 +1,66 @@
+name: SolveBeat Content & Directory Discovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target base URL (with protocol, no trailing slash)'
+        required: true
+      scan_id:
+        description: 'SolveBeat supply_chain_scans.id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install ffuf
+        run: |
+          FFUF_LATEST=$(curl -s https://api.github.com/repos/ffuf/ffuf/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+          FFUF_VER=${FFUF_LATEST#v}
+          curl -sL "https://github.com/ffuf/ffuf/releases/download/${FFUF_LATEST}/ffuf_${FFUF_VER}_linux_amd64.tar.gz" -o ffuf.tar.gz
+          tar -xzf ffuf.tar.gz ffuf
+          chmod +x ffuf
+          sudo mv ffuf /usr/local/bin/ffuf
+          ffuf -V || true
+
+      - name: Run ffuf against curated path list
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+        run: |
+          ffuf -u "${TARGET_URL%/}/FUZZ" \
+            -w scripts/wordlists/common-paths.txt \
+            -mc 200,204,301,302,307,401,403 \
+            -fs 0 \
+            -t 30 -timeout 8 -maxtime 300 \
+            -silent -json -o /tmp/ffuf-results.json || true
+          cat /tmp/ffuf-results.json 2>/dev/null | head -c 500 || echo "(no output)"
+
+      - name: Build findings
+        run: node scripts/run-dir-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/dir-scan-result.json ]; then
+            jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/dir-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"Directory scan produced no output"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
