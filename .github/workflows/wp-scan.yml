@@ -1,0 +1,69 @@
+name: SolveBeat WordPress Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target base URL (with protocol)'
+        required: true
+      scan_id:
+        description: 'SolveBeat supply_chain_scans.id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run WPScan (official Docker image)
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          # Optional -- without a WPVulnDB/WPScan API token, plugin/theme/
+          # core detection still works but without matched CVE data. Add a
+          # WPSCAN_API_TOKEN repo secret to enable vulnerability lookups.
+          WPSCAN_API_TOKEN: ${{ secrets.WPSCAN_API_TOKEN }}
+        run: |
+          TOKEN_ARGS=""
+          if [ -n "$WPSCAN_API_TOKEN" ]; then
+            TOKEN_ARGS="--api-token $WPSCAN_API_TOKEN"
+          fi
+          mkdir -p /tmp/wpscan-out
+          docker run --rm -v /tmp/wpscan-out:/wpscan-out wpscanteam/wpscan --url "$TARGET_URL" \
+            --enumerate vp,vt,u \
+            --format json \
+            --no-banner \
+            --random-user-agent \
+            --request-timeout 15 \
+            --detection-mode mixed \
+            $TOKEN_ARGS \
+            -o /wpscan-out/wpscan-results.json 2>/tmp/wpscan-stderr.log || true
+          cp /tmp/wpscan-out/wpscan-results.json /tmp/wpscan-results.json 2>/dev/null || true
+          cat /tmp/wpscan-stderr.log 2>/dev/null | tail -20 || true
+
+      - name: Build findings
+        run: node scripts/run-wp-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/wp-scan-result.json ]; then
+            jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/wp-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"WPScan produced no output -- target may not be running WordPress"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
