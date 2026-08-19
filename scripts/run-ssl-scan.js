@@ -36,10 +36,20 @@ function readResults(file) {
   }
 }
 
+// testssl.sh mixes real findings about the TARGET in with self-diagnostic
+// notes about its own runner environment (missing local OpenSSL engine
+// support, "--fast is not recommended" reminders, QUIC untestable locally)
+// -- those aren't a weakness of the site being scanned, just noise from
+// running inside a stock GitHub Actions runner. Excluded outright rather
+// than downgraded, since they'd otherwise misleadingly look like real
+// medium-severity target findings.
+const EXCLUDE_IDS = new Set(['engine_problem', 'cmdline_fast_depreciation', 'QUIC']);
+
 const rows = readResults(TESTSSL_FILE);
 const findings = [];
 
 for (const row of rows) {
+  if (EXCLUDE_IDS.has(row.id)) continue;
   const sev = (row.severity || '').toUpperCase();
   const mapped = SEVERITY_MAP[sev];
   const include = mapped || ALWAYS_INCLUDE_IDS.has(row.id);
