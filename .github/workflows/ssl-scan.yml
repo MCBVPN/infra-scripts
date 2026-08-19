@@ -1,0 +1,56 @@
+name: SolveBeat TLS/SSL Configuration Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: 'Target hostname (no protocol, no port)'
+        required: true
+      scan_id:
+        description: 'SolveBeat supply_chain_scans.id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install testssl.sh
+        run: |
+          git clone --depth 1 https://github.com/drwetter/testssl.sh.git /tmp/testssl.sh
+          chmod +x /tmp/testssl.sh/testssl.sh
+
+      - name: Run testssl.sh
+        env:
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          /tmp/testssl.sh/testssl.sh --quiet --color 0 --fast --jsonfile /tmp/testssl-results.json "$TARGET_HOST":443 || true
+          cat /tmp/testssl-results.json 2>/dev/null | head -c 500 || echo "(no output)"
+
+      - name: Build findings
+        run: node scripts/run-ssl-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/ssl-scan-result.json ]; then
+            jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/ssl-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"TLS/SSL scan produced no output -- target may not accept HTTPS on 443"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
