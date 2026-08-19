@@ -27,6 +27,10 @@ on:
         description: 'Ramp-up duration in seconds (gradual vs sudden-burst comparison)'
         required: false
         default: '10'
+      cache_bust:
+        description: 'Append a unique query param per request to force cache misses'
+        required: false
+        default: 'true'
 
 jobs:
   node:
@@ -91,7 +95,8 @@ jobs:
             return __ENV.TARGET_URL + sep + '_sbcb=' + Date.now() + '-' + __VU + '-' + __ITER;
           }
           export default function () {
-            const res = http.get(cacheBustedUrl());
+            const url = __ENV.CACHE_BUST === 'false' ? __ENV.TARGET_URL : cacheBustedUrl();
+            const res = http.get(url);
             if (res.status === 0) networkErrors.add(1);
             else if (res.status >= 500) serverErrors.add(1);
             else if (res.status >= 400) clientErrors.add(1);
@@ -122,6 +127,7 @@ jobs:
           NODE_INDEX: ${{ matrix.node_index }}
           METRICS_URL: ${{ github.event.inputs.metrics_url }}
           RAMP_SECONDS: ${{ github.event.inputs.ramp_seconds }}
+          CACHE_BUST: ${{ github.event.inputs.cache_bust }}
           CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
         run: |
           # k6's own InfluxDB output can't be pointed at our backend safely
@@ -178,6 +184,7 @@ jobs:
           SUMMARY=$(cat /tmp/summary.json 2>/dev/null || echo '{}')
           PAYLOAD=$(jq -n --arg runId "$RUN_ID" --argjson nodeIndex "$NODE_INDEX" --arg ip "$REPORTED_IP" --argjson summary "$SUMMARY" '{runId:$runId, nodeIndex:$nodeIndex, reportedIp:$ip, summary:$summary}')
           curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" -d "$PAYLOAD"
+
 
 
 
