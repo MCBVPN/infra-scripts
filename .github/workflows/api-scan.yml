@@ -1,0 +1,73 @@
+name: SolveBeat API Schema Security Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      schema_url:
+        description: 'OpenAPI/Swagger schema URL (JSON or YAML)'
+        required: true
+      scan_id:
+        description: 'SolveBeat supply_chain_scans.id for correlating results'
+        required: true
+      callback_url:
+        description: 'Backend URL to POST results to'
+        required: true
+      auth_header:
+        description: 'Optional "Header-Name: value" captured while authenticated (e.g. Authorization: Bearer ey...), injected into every request ZAP sends'
+        required: false
+        default: ''
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run OWASP ZAP API scan (schema-based fuzzing)
+        env:
+          SCHEMA_URL: ${{ github.event.inputs.schema_url }}
+          AUTH_HEADER: ${{ github.event.inputs.auth_header }}
+        run: |
+          mkdir -p /tmp/zap-wrk
+          chmod 777 /tmp/zap-wrk
+
+          ZAP_EXTRA=()
+          if [ -n "$AUTH_HEADER" ]; then
+            HEADER_NAME="${AUTH_HEADER%%:*}"
+            HEADER_VALUE="${AUTH_HEADER#*: }"
+            ZAP_EXTRA=(-z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=$HEADER_NAME -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=$HEADER_VALUE")
+          fi
+
+          # zap-api-scan.py does schema-aware active fuzzing of every
+          # documented operation/parameter -- broader coverage of
+          # authorization/parameter-tampering issues (BOLA/IDOR-adjacent)
+          # than a generic crawl-based scan, because it knows the exact
+          # shape of every endpoint upfront instead of having to discover it.
+          docker run --rm -v /tmp/zap-wrk:/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-api-scan.py -t "$SCHEMA_URL" -f openapi -J report.json -I "${ZAP_EXTRA[@]}" || true
+
+          ls -la /tmp/zap-wrk || true
+
+      - name: Build findings
+        run: node scripts/run-api-scan.js
+
+      - name: Report results
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          CALLBACK_URL: ${{ github.event.inputs.callback_url }}
+        run: |
+          if [ -f /tmp/api-scan-result.json ]; then
+            jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/api-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          else
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"API scan produced no output -- schema URL may be unreachable or not a valid OpenAPI document"}' > /tmp/payload.json
+          fi
+          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Callback-Secret: $CALLBACK_SECRET" --data-binary @/tmp/payload.json
