@@ -46,6 +46,7 @@ jobs:
             --random-user-agent \
             --request-timeout 15 \
             --detection-mode mixed \
+            --max-threads 25 \
             $TOKEN_ARGS \
             -o /wpscan-out/wpscan-results.json 2>/tmp/wpscan-stderr.log || true
           cp /tmp/wpscan-out/wpscan-results.json /tmp/wpscan-results.json 2>/dev/null || true
