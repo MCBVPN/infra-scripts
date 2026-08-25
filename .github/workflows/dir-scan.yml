@@ -16,7 +16,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,15 +36,22 @@ jobs:
           sudo mv ffuf /usr/local/bin/ffuf
           ffuf -V || true
 
-      - name: Run ffuf against curated path list
+      - name: Build merged wordlist (curated list + SecLists raft-small-directories)
+        run: |
+          curl -sL "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-directories.txt" -o /tmp/raft-small.txt || true
+          cat scripts/wordlists/common-paths.txt /tmp/raft-small.txt 2>/dev/null | grep -v '^#' | sort -u > /tmp/merged-wordlist.txt
+          wc -l /tmp/merged-wordlist.txt || true
+
+      - name: Run ffuf against merged wordlist (with extension fuzzing)
         env:
           TARGET_URL: ${{ github.event.inputs.target_url }}
         run: |
           ffuf -u "${TARGET_URL%/}/FUZZ" \
-            -w scripts/wordlists/common-paths.txt \
+            -w /tmp/merged-wordlist.txt \
+            -e .bak,.zip,.old,.sql,.tar.gz,.env,.log \
             -mc 200,204,301,302,307,401,403 \
             -fs 0 \
-            -t 30 -timeout 8 -maxtime 300 \
+            -t 30 -timeout 8 -maxtime 600 \
             -silent -json -o /tmp/ffuf-results.json || true
           cat /tmp/ffuf-results.json 2>/dev/null | head -c 500 || echo "(no output)"
 
