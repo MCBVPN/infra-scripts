@@ -45,9 +45,19 @@ jobs:
           SEVERITY: ${{ github.event.inputs.severity }}
           TAGS: ${{ github.event.inputs.tags }}
         run: |
-          ARGS=(-u "$TARGET_URL" -as -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl)
+          ARGS=(-u "$TARGET_URL" -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl)
           if [ -n "$SEVERITY" ]; then ARGS+=(-severity "$SEVERITY"); fi
-          if [ -n "$TAGS" ]; then ARGS+=(-tags "$TAGS"); fi
+          if [ -n "$TAGS" ]; then
+            ARGS+=(-tags "$TAGS")
+          else
+            # No caller-specified tags -- previously fell back to -as
+            # (automatic-scan), which only runs templates matching
+            # detected tech and misses everything else. Run a broad,
+            # non-destructive default set instead (still excluding
+            # dos/fuzz tags above) so a blank request finds more than
+            # just tech-fingerprint matches.
+            ARGS+=(-tags cves,exposures,misconfiguration,default-logins,vulnerabilities,tech)
+          fi
           nuclei "${ARGS[@]}" || true
 
       - name: Report results
