@@ -51,7 +51,8 @@ jobs:
             -e .bak,.zip,.old,.sql,.tar.gz,.env,.log \
             -mc 200,204,301,302,307,401,403 \
             -fs 0 \
-            -t 30 -timeout 8 -maxtime 600 \
+            -recursion -recursion-depth 2 \
+            -t 100 -timeout 8 -maxtime 600 \
             -silent -json -o /tmp/ffuf-results.json || true
           cat /tmp/ffuf-results.json 2>/dev/null | head -c 500 || echo "(no output)"
 
