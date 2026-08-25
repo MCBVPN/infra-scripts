@@ -45,7 +45,7 @@ jobs:
           SEVERITY: ${{ github.event.inputs.severity }}
           TAGS: ${{ github.event.inputs.tags }}
         run: |
-          ARGS=(-u "$TARGET_URL" -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 100 -no-color -o /tmp/results.jsonl)
+          ARGS=(-u "$TARGET_URL" -jsonl -etags dos,fuzz -silent -timeout 10 -rate-limit 500 -c 50 -bulk-size 50 -no-color -o /tmp/results.jsonl)
           if [ -n "$SEVERITY" ]; then ARGS+=(-severity "$SEVERITY"); fi
           if [ -n "$TAGS" ]; then
             ARGS+=(-tags "$TAGS")
