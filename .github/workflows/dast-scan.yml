@@ -20,7 +20,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,13 +45,17 @@ jobs:
             ZAP_EXTRA=(-z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=$HEADER_NAME -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=$HEADER_VALUE")
           fi
 
-          # -m 5: cap the spider phase to 5 minutes so the whole job stays
-          # inside the 20-minute job timeout even against a larger site.
+          # -m 5: cap the traditional spider phase to 5 minutes.
+          # -j: also run the Ajax Spider (headless-browser crawl) after the
+          # traditional one -- a plain link-following spider finds almost
+          # nothing on a JS-rendered SPA, which otherwise starves the active
+          # scan of anything to attack. Job timeout raised to 25m to give
+          # the extra crawl phase room.
           # -I: don't fail the container's own exit code on findings (we
           # read the JSON report ourselves; ZAP's exit code is not our
           # success/failure signal here).
           docker run --rm -v /tmp/zap-wrk:/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable \
-            zap-full-scan.py -t "$TARGET_URL" -m 5 -J report.json -I "${ZAP_EXTRA[@]}" || true
+            zap-full-scan.py -t "$TARGET_URL" -m 5 -j -J report.json -I "${ZAP_EXTRA[@]}" || true
 
           ls -la /tmp/zap-wrk || true
 
