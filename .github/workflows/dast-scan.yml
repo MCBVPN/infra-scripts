@@ -38,12 +38,16 @@ jobs:
           mkdir -p /tmp/zap-wrk
           chmod 777 /tmp/zap-wrk
 
-          ZAP_EXTRA=()
+          # scanner.threadPerHost: ZAP's active-scan concurrency per host
+          # (default 2) -- raised so the active scan phase runs substantially
+          # faster/heavier against the target.
+          ZAP_CONFIG="-config scanner.threadPerHost=10"
           if [ -n "$AUTH_HEADER" ]; then
             HEADER_NAME="${AUTH_HEADER%%:*}"
             HEADER_VALUE="${AUTH_HEADER#*: }"
-            ZAP_EXTRA=(-z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=$HEADER_NAME -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=$HEADER_VALUE")
+            ZAP_CONFIG="$ZAP_CONFIG -config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=$HEADER_NAME -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=$HEADER_VALUE"
           fi
+          ZAP_EXTRA=(-z "$ZAP_CONFIG")
 
           # -m 5: cap the traditional spider phase to 5 minutes.
           # -j: also run the Ajax Spider (headless-browser crawl) after the
