@@ -36,6 +36,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Install amass
+        run: |
+          curl -sL https://github.com/owasp-amass/amass/releases/latest/download/amass_linux_amd64.tar.gz -o /tmp/amass.tar.gz
+          tar -xzf /tmp/amass.tar.gz -C /tmp
+          sudo mv /tmp/amass_linux_amd64/amass /usr/local/bin/amass
+
       - name: Download and start ZAP
         env:
           ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
@@ -57,6 +63,17 @@ jobs:
           done
           echo "ZAP did not start in time"; cat /tmp/zap.log; exit 1
 
+      # Backgrounded so it runs alongside ZAP's own scan below instead of
+      # adding its own runtime on top -- amass is bounded to 3 minutes,
+      # well inside how long the ZAP step alone normally takes, so in the
+      # common case it's already finished by the time ZAP is. The "Wait
+      # for amass" step after ZAP covers the case where ZAP finishes fast.
+      - name: Run amass recon in background
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          AMASS_MAX_DURATION_SECONDS: '180'
+        run: node scripts/run-amass-recon.js > /tmp/amass-recon.log 2>&1 &
+
       - name: Run scan
         env:
           ZAP_API_URL: http://127.0.0.1:8090
@@ -64,6 +81,15 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.target_url }}
           MAX_DURATION_SECONDS: ${{ github.event.inputs.max_duration_seconds }}
         run: node scripts/run-zap-scan.js
+
+      - name: Wait for amass
+        if: always()
+        run: |
+          for i in $(seq 1 60); do
+            if [ -f /tmp/amass-result.json ] || [ -f /tmp/amass-error.txt ]; then exit 0; fi
+            sleep 2
+          done
+          echo "Amass still running after ZAP finished -- giving up waiting, reporting without it"
 
       - name: Report results
         if: always()
@@ -75,7 +101,10 @@ jobs:
           if [ -f /tmp/zap-error.txt ]; then
             jq -n --arg jobId "$JOB_ID" --rawfile err /tmp/zap-error.txt '{job_id:$jobId, error:$err}' > /tmp/payload.json
           elif [ -f /tmp/zap-result.json ]; then
-            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/zap-result.json '{job_id:$jobId, result:$result[0]}' > /tmp/payload.json
+            AMASS_JSON='[]'
+            if [ -f /tmp/amass-result.json ]; then AMASS_JSON=$(cat /tmp/amass-result.json); fi
+            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/zap-result.json --argjson amass "$AMASS_JSON" \
+              '{job_id:$jobId, result:$result[0], amass_subdomains:$amass}' > /tmp/payload.json
           else
             jq -n --arg jobId "$JOB_ID" '{job_id:$jobId, error:"ZAP scan produced no output"}' > /tmp/payload.json
           fi
