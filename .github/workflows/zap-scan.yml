@@ -45,6 +45,16 @@ jobs:
           sudo chmod +x /usr/local/bin/subfinder
           subfinder -version
 
+      - name: Install nuclei
+        run: |
+          NU_URL=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep -o 'browser_download_url": "[^"]*linux_amd64[^"]*"' | head -1 | sed -E 's/.*"(https[^"]+)"/\1/')
+          curl -sL "$NU_URL" -o /tmp/nuclei.zip
+          unzip -o /tmp/nuclei.zip nuclei -d /tmp
+          sudo mv /tmp/nuclei /usr/local/bin/nuclei
+          sudo chmod +x /usr/local/bin/nuclei
+          nuclei -update-templates -silent || true
+          nuclei -version
+
       - name: Download and start ZAP
         env:
           ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
@@ -77,6 +87,12 @@ jobs:
           SUBFINDER_MAX_DURATION_SECONDS: '180'
         run: node scripts/run-subdomain-recon.js > /tmp/subdomain-recon.log 2>&1 &
 
+      - name: Run nuclei scan in background
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          NUCLEI_MAX_DURATION_SECONDS: '600'
+        run: node scripts/run-nuclei-scan.js > /tmp/nuclei-scan.log 2>&1 &
+
       - name: Run scan
         env:
           ZAP_API_URL: http://127.0.0.1:8090
@@ -94,6 +110,15 @@ jobs:
           done
           echo "Subdomain recon still running after ZAP finished -- reporting without it"
 
+      - name: Wait for nuclei
+        if: always()
+        run: |
+          for i in $(seq 1 150); do
+            if [ -f /tmp/nuclei-result.json ] || [ -f /tmp/nuclei-error.txt ]; then exit 0; fi
+            sleep 2
+          done
+          echo "nuclei still running after ZAP finished -- reporting without it"
+
       - name: Report results
         if: always()
         env:
@@ -106,8 +131,10 @@ jobs:
           elif [ -f /tmp/zap-result.json ]; then
             SUBS_JSON='[]'
             if [ -f /tmp/subdomain-result.json ]; then SUBS_JSON=$(cat /tmp/subdomain-result.json); fi
-            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/zap-result.json --argjson subs "$SUBS_JSON" \
-              '{job_id:$jobId, result:$result[0], subdomains:$subs}' > /tmp/payload.json
+            NUCLEI_JSON='[]'
+            if [ -f /tmp/nuclei-result.json ]; then NUCLEI_JSON=$(cat /tmp/nuclei-result.json); fi
+            jq -n --arg jobId "$JOB_ID" --slurpfile result /tmp/zap-result.json --argjson subs "$SUBS_JSON" --argjson nuclei "$NUCLEI_JSON" \
+              '{job_id:$jobId, result:$result[0], subdomains:$subs, nuclei:$nuclei}' > /tmp/payload.json
           else
             jq -n --arg jobId "$JOB_ID" '{job_id:$jobId, error:"ZAP scan produced no output"}' > /tmp/payload.json
           fi
