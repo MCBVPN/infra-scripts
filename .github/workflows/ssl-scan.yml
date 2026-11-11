@@ -28,7 +28,11 @@ jobs:
 
       - name: Install testssl.sh
         run: |
-          git clone --depth 1 https://github.com/drwetter/testssl.sh.git /tmp/testssl.sh
+          # The project moved from drwetter/testssl.sh (now an empty repo) to
+          # testssl/testssl.sh. Prefer the stable 3.2 branch, fall back to default.
+          git clone --depth 1 --branch 3.2 https://github.com/testssl/testssl.sh.git /tmp/testssl.sh \
+            || git clone --depth 1 https://github.com/testssl/testssl.sh.git /tmp/testssl.sh
+          test -f /tmp/testssl.sh/testssl.sh
           chmod +x /tmp/testssl.sh/testssl.sh
 
       - name: Run testssl.sh
@@ -50,6 +54,9 @@ jobs:
         run: |
           if [ -f /tmp/ssl-scan-result.json ]; then
             jq -n --arg scanId "$SCAN_ID" --slurpfile result /tmp/ssl-scan-result.json '{scanId:$scanId, result:$result[0]}' > /tmp/payload.json
+          elif [ ! -f /tmp/testssl.sh/testssl.sh ]; then
+            # Say what actually went wrong: a missing scanner is a tool problem, not a fact about the target.
+            jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"The TLS/SSL scanner could not be installed on the scan runner, so the target was not tested. This is a tool problem, not a result about the target."}' > /tmp/payload.json
           else
             jq -n --arg scanId "$SCAN_ID" '{scanId:$scanId, error:"TLS/SSL scan produced no output -- target may not accept HTTPS on 443"}' > /tmp/payload.json
           fi
