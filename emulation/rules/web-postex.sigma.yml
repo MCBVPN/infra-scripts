@@ -1,0 +1,70 @@
+title: Web Server Process Spawning Discovery Commands
+id: 6f0c7b1e-3f0a-4c58-9a4e-5d2a1c9b7e01
+status: experimental
+description: A web or application server process started a shell or a host-discovery command. Matches lab rules WEB-04 and WEB-05.
+author: SolveBeat emulation lab
+date: 2026-11-12
+tags:
+    - attack.persistence
+    - attack.t1505.003
+    - attack.execution
+    - attack.t1059.004
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '/nginx'
+            - '/apache2'
+            - '/httpd'
+            - '/php-fpm'
+            - '/node'
+            - '/java'
+            - '/tomcat'
+    selection_child:
+        Image|endswith:
+            - '/sh'
+            - '/bash'
+            - '/dash'
+            - '/id'
+            - '/whoami'
+            - '/uname'
+            - '/curl'
+            - '/wget'
+    condition: selection_parent and selection_child
+falsepositives:
+    - Applications that legitimately shell out (image conversion, health checks). Baseline per host before alerting.
+level: high
+---
+title: Script File Created In Web Upload Directory
+id: 6f0c7b1e-3f0a-4c58-9a4e-5d2a1c9b7e02
+status: experimental
+description: A server-side script file appeared in a directory meant for user uploads. Matches lab rule WEB-02.
+author: SolveBeat emulation lab
+date: 2026-11-12
+tags:
+    - attack.persistence
+    - attack.t1505.003
+logsource:
+    category: file_event
+    product: linux
+detection:
+    selection_path:
+        TargetFilename|contains:
+            - '/uploads/'
+            - '/upload/'
+            - '/media/'
+    selection_ext:
+        TargetFilename|endswith:
+            - '.php'
+            - '.phtml'
+            - '.jsp'
+            - '.jspx'
+            - '.aspx'
+            - '.cgi'
+            - '.sh'
+    condition: selection_path and selection_ext
+falsepositives:
+    - Deployments that write code into a path containing one of these directory names.
+level: high

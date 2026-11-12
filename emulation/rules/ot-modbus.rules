@@ -1,0 +1,9 @@
+# Suricata rules matching the cold-chain scenario (lab rules CC-03, CC-04, CC-05).
+# Set $MODBUS_MASTERS to the building-management hosts that are allowed to
+# talk to the controllers and $OT_NET to the controller network. Adjust the
+# register addresses and safe band to the real controller's register map.
+
+alert modbus !$MODBUS_MASTERS any -> $OT_NET any (msg:"SOLVBEAT OT Modbus request from non-master host"; flow:to_server,established; threshold:type limit, track by_src, count 1, seconds 60; classtype:policy-violation; sid:9100001; rev:1;)
+alert modbus any any -> $OT_NET any (msg:"SOLVBEAT OT high-temperature alarm disabled (holding register 2 = 0)"; flow:to_server,established; modbus: access write holding, address 2, value 0; classtype:attempted-admin; sid:9100002; rev:1;)
+alert modbus any any -> $OT_NET any (msg:"SOLVBEAT OT freezer setpoint written above safe band (holding register 0)"; flow:to_server,established; modbus: access write holding, address 0, value >65386; classtype:attempted-admin; sid:9100003; rev:1;)
+alert modbus any any -> $OT_NET any (msg:"SOLVBEAT OT freezer setpoint written to a positive temperature (holding register 0)"; flow:to_server,established; modbus: access write holding, address 0, value <32768; classtype:attempted-admin; sid:9100004; rev:1;)

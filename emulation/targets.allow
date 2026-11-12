@@ -1,0 +1,3 @@
+# Private addresses of our OWN hosts running a decoy started with
+# "node emulation/run.js serve ...". One address per line.
+# Loopback is always allowed; public addresses are always refused.

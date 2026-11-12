@@ -1,0 +1,42 @@
+name: SolveBeat Attack Emulation Lab
+
+# Self-contained: decoys, emulated attack and detection rules all run on the
+# runner's loopback interface. Takes no target, so it cannot be pointed at
+# anything outside the runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario to run'
+        type: choice
+        options: [all, cold-chain, web-postex, exfil]
+        default: all
+      disable_rules:
+        description: 'Comma-separated rule ids to switch off (to see what each rule is worth)'
+        required: false
+        default: ''
+
+jobs:
+  emulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run emulation
+        env:
+          SCENARIO: ${{ github.event.inputs.scenario }}
+          DISABLE_RULES: ${{ github.event.inputs.disable_rules }}
+        run: |
+          ARGS=("$SCENARIO" --json scorecard.json)
+          if [ -n "$DISABLE_RULES" ]; then ARGS+=(--disable "$DISABLE_RULES"); fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          node emulation/run.js "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emulation-scorecard
+          path: scorecard.json
